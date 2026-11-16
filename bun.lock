@@ -576,6 +576,22 @@
         "typescript": "catalog:",
       },
     },
+    "packages/plugins/context": {
+      "name": "@opencode/plugin-context",
+      "version": "2.3.0",
+      "dependencies": {
+        "effect": "4.1.0",
+        "htmlparser2": "8.0.2",
+      },
+      "devDependencies": {
+        "@tsconfig/bun": "1.0.9",
+        "@types/bun": "1.4.3",
+        "@typescript/native": "npm:typescript@7.1.0-beta",
+      },
+      "peerDependencies": {
+        "@opencode/plugin": "^2.3.0 || ^0.0.0-dev",
+      },
+    },
     "packages/plugins/figma": {
       "name": "@opencode/plugin-figma",
       "version": "2.3.0",
@@ -1828,6 +1844,8 @@
     "@opencode/plugin": ["@opencode/plugin@workspace:packages/plugin"],
 
     "@opencode/plugin-browser": ["@opencode/plugin-browser@workspace:packages/plugin-browser"],
+
+    "@opencode/plugin-context": ["@opencode/plugin-context@workspace:packages/plugins/context"],
 
     "@opencode/plugin-figma": ["@opencode/plugin-figma@workspace:packages/plugins/figma"],
 
