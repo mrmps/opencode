@@ -3,23 +3,6 @@ import { Duration, Effect, Schema, Scope } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { Parser } from "htmlparser2"
 
-const SearchResponse = Schema.Struct({
-  partial: Schema.optionalKey(Schema.Boolean),
-  results: Schema.Array(
-    Schema.Struct({
-      url: Schema.String,
-      title: Schema.optionalKey(Schema.String),
-      description: Schema.optionalKey(Schema.String),
-      highlights: Schema.optionalKey(
-        Schema.Struct({
-          code: Schema.String,
-          highlights: Schema.NullOr(Schema.Array(Schema.String)),
-        }),
-      ),
-    }),
-  ),
-})
-
 const failure = {
   success: Schema.NullOr(Schema.Boolean),
   error_code: Schema.optionalKey(Schema.String),
@@ -67,11 +50,11 @@ export default Plugin.define<HttpClient.HttpClient | Scope.Scope>({
       editor.method.update({ integrationID: "context", method: { type: "env", names: ["CONTEXT_API_KEY"] } })
     })
 
-    const request = Effect.fn("Context.request")(function* (path: string, body: unknown, timeout = 30) {
+    const scrape = Effect.fn("Context.scrape")(function* (body: unknown, timeout: number) {
       const connection = yield* ctx.integration.connection.active("context")
       const credential = connection ? yield* ctx.integration.connection.resolve(connection) : undefined
       if (credential?.type !== "key") return yield* Effect.fail(new Error("Connect Context.dev or set CONTEXT_API_KEY"))
-      const request = yield* HttpClientRequest.post(`https://api.context.dev/v1/web/${path}`).pipe(
+      const request = yield* HttpClientRequest.post("https://api.context.dev/v1/web/scrape").pipe(
         HttpClientRequest.setHeaders({ Authorization: `Bearer ${credential.key}` }),
         HttpClientRequest.bodyJson(body),
       )
@@ -93,34 +76,6 @@ export default Plugin.define<HttpClient.HttpClient | Scope.Scope>({
               ),
         ),
       )
-    })
-
-    yield* ctx.websearch.transform((editor) => {
-      editor.add({
-        id: "context",
-        name: "Context.dev",
-        execute: (input) =>
-          request("search", { query: input.query, numResults: 10, highlightsOptions: { enabled: true } }).pipe(
-            Effect.flatMap((response) =>
-              Schema.decodeUnknownEffect(SearchResponse)(response).pipe(
-                Effect.mapError(() => new Error("Context.dev returned an invalid search response")),
-              ),
-            ),
-            Effect.map((response) =>
-              response.results.slice(0, 8).map((result) => ({
-                url: result.url,
-                ...(result.title ? { title: result.title } : {}),
-                content: [
-                  ...(response.partial ? ["Search returned partial results."] : []),
-                  (result.highlights?.code === "SUCCESS" && result.highlights.highlights?.join("\n\n")) ||
-                    result.description ||
-                    "",
-                ].join("\n\n"),
-                time: {},
-              })),
-            ),
-          ),
-      })
     })
 
     yield* ctx.tool.transform((editor) => {
@@ -153,8 +108,7 @@ export default Plugin.define<HttpClient.HttpClient | Scope.Scope>({
               })
             yield* permission(url)
             const format = input.format === "text" ? "html" : input.format
-            const response = yield* request(
-              "scrape",
+            const response = yield* scrape(
               {
                 url,
                 formats: { [format]: true },

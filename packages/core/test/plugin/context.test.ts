@@ -116,6 +116,16 @@ const setup = Effect.fn(function* (body: unknown = {}, status = 200, pending = f
   yield* WebSearchTool.Plugin.effect(host)
   const tools = yield* Tool.Service
   const before = yield* tools.list()
+  const websearch = yield* WebSearch.Service
+  yield* websearch.transform((editor) =>
+    editor.add({
+      id: WebSearch.ID.make("existing"),
+      name: "Existing search",
+      execute: () => Effect.succeed([{ url, content: "Existing provider result", time: {} }]),
+    }),
+  )
+  yield* websearch.select(WebSearch.ID.make("existing"))
+  const beforeSearch = yield* websearch.providers()
   const modules = yield* PluginModule.make()
   const loaded = yield* modules.load({
     type: "add",
@@ -126,10 +136,8 @@ const setup = Effect.fn(function* (body: unknown = {}, status = 200, pending = f
   expect(loaded.id).toBe("opencode.context")
   if (activate) {
     yield* loaded.effect(host).pipe(Effect.provideService(HttpClient.HttpClient, http))
-    const websearch = yield* WebSearch.Service
-    yield* websearch.select(WebSearch.ID.make("context"))
   }
-  return { tools, before, requests, started, signals }
+  return { tools, before, websearch, beforeSearch, requests, started, signals }
 })
 
 const call = (tools: Tool.Interface, name: string, input: unknown) =>
@@ -156,29 +164,28 @@ describe("Context OpenCode acceptance", () => {
     }),
   )
 
-  it.live("loads the package and replaces native web tools without adding MCP tools", () =>
+  it.live("loads the scraping plugin without adding tools or changing web search", () =>
     Effect.gen(function* () {
-      const fixture = yield* setup({
-        results: [{ url, title: "Retries", highlights: { code: "SUCCESS", highlights: ["Set retries to 3."] } }],
-      })
+      const fixture = yield* setup(scraped("markdown", "# Page content"))
       expect((yield* fixture.tools.list()).map((tool) => tool.name)).toEqual(fixture.before.map((tool) => tool.name))
+      expect(yield* fixture.websearch.providers()).toEqual(fixture.beforeSearch)
+      expect(yield* fixture.websearch.default()).toEqual({ id: WebSearch.ID.make("existing"), name: "Existing search" })
+      const search = yield* call(fixture.tools, "websearch", { query: "configure retries" })
+      expect(search.status).toBe("completed")
+      expect(JSON.stringify(search)).toContain("Existing provider result")
+      expect(fixture.requests).toHaveLength(0)
       const integrations = yield* Integration.Service
       expect(yield* integrations.get(Integration.ID.make("context"))).toMatchObject({
         name: "Context.dev",
         methods: [{ type: "key" }, { type: "env", names: ["CONTEXT_API_KEY"] }],
       })
-      const output = yield* call(fixture.tools, "websearch", { query: "configure retries" })
+      const output = yield* call(fixture.tools, "webfetch", { url })
       expect(output.status).toBe("completed")
-      expect(JSON.stringify(output)).toContain("Set retries to 3.")
-      expect(JSON.stringify(output)).toContain(url)
+      expect(JSON.stringify(output)).toContain("# Page content")
       expect(JSON.stringify(output)).not.toContain(key)
       expect(fixture.requests).toHaveLength(1)
-      expect(fixture.requests[0]?.path).toBe("/v1/web/search")
+      expect(fixture.requests[0]?.path).toBe("/v1/web/scrape")
       expect(fixture.requests[0]?.headers.get("authorization")).toBe(`Bearer ${key}`)
-      expect(fixture.requests[0]?.body).toMatchObject({
-        query: "configure retries",
-        highlightsOptions: { enabled: true },
-      })
     }),
   )
 
@@ -237,7 +244,6 @@ describe("Context OpenCode acceptance", () => {
       const fixture = yield* setup()
       delete process.env.CONTEXT_API_KEY
       expect((yield* call(fixture.tools, "webfetch", { url })).status).toBe("error")
-      expect((yield* call(fixture.tools, "websearch", { query: "configure retries" })).status).toBe("error")
       expect(fixture.requests).toHaveLength(0)
     }),
   )
@@ -289,62 +295,17 @@ describe("Context OpenCode acceptance", () => {
   for (const response of [
     { name: "HTTP authentication failure", body: { message: "Unauthorized" }, status: 401 },
     { name: "malformed JSON", body: "{broken", status: 200 },
-    { name: "invalid results envelope", body: { results: "invalid" }, status: 200 },
+    { name: "invalid scrape envelope", body: { markdown: "invalid" }, status: 200 },
   ]) {
-    it.live(`reports search ${response.name} without leaking credentials`, () =>
+    it.live(`reports scrape ${response.name} without leaking credentials`, () =>
       Effect.gen(function* () {
         const fixture = yield* setup(response.body, response.status)
-        const output = yield* call(fixture.tools, "websearch", { query: "configure retries" })
+        const output = yield* call(fixture.tools, "webfetch", { url })
         expect(output.status).toBe("error")
         expect(JSON.stringify(output)).not.toContain(key)
       }),
     )
   }
-
-  it.live("reports empty search results through the native no-results output", () =>
-    Effect.gen(function* () {
-      const fixture = yield* setup({ results: [] })
-      const output = yield* call(fixture.tools, "websearch", { query: "no matching page" })
-      expect(output.status).toBe("completed")
-      expect(JSON.stringify(output)).toContain(WebSearchTool.NO_RESULTS)
-    }),
-  )
-
-  it.live("respects switching providers and disabling websearch", () =>
-    Effect.gen(function* () {
-      const fixture = yield* setup({ results: [] })
-      const websearch = yield* WebSearch.Service
-      yield* websearch.transform((editor) =>
-        editor.add({
-          id: WebSearch.ID.make("other"),
-          name: "Other",
-          execute: () => Effect.succeed([{ url, content: "Other provider result", time: {} }]),
-        }),
-      )
-      yield* websearch.select(WebSearch.ID.make("other"))
-      expect(JSON.stringify(yield* call(fixture.tools, "websearch", { query: "configure retries" }))).toContain(
-        "Other provider result",
-      )
-      yield* websearch.select(false)
-      expect((yield* call(fixture.tools, "websearch", { query: "configure retries" })).status).toBe("error")
-      expect(fixture.requests).toHaveLength(0)
-    }),
-  )
-
-  it.live("uses search descriptions when Highlights are unavailable without claiming a page read", () =>
-    Effect.gen(function* () {
-      const fixture = yield* setup({
-        results: [
-          { url, title: "Retries", description: "Search description", highlights: { code: "ERROR", highlights: [] } },
-        ],
-      })
-      const output = yield* call(fixture.tools, "websearch", { query: "configure retries" })
-      expect(output.status).toBe("completed")
-      expect(JSON.stringify(output)).toContain("Search description")
-      expect(fixture.requests).toHaveLength(1)
-      expect(fixture.requests[0]?.path).toBe("/v1/web/search")
-    }),
-  )
 
   it.live("aborts the outbound scrape when the OpenCode call is cancelled", () =>
     Effect.gen(function* () {
